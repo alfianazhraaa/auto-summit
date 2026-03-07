@@ -1,511 +1,612 @@
 --[[
-  SUMMIT + GOPAY AUTO v6
+  MOTION LOGGER PRO
+  Records movement, clicks, jumps, tool use
 ]]
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 
 pcall(function()
     for _, g in ipairs(player.PlayerGui:GetChildren()) do
-        if g.Name == "SL6" then g:Destroy() end
+        if g.Name == "MLPro" then g:Destroy() end
     end
 end)
 
--- ANTI-LAG
-pcall(function() settings().Rendering.QualityLevel = 1 end)
-pcall(function() workspace.GlobalShadows = false end)
-pcall(function()
-    for _, v in ipairs(workspace:GetDescendants()) do
-        if v:IsA("ParticleEmitter") or v:IsA("Fire") or v:IsA("Smoke") or v:IsA("Sparkles") then
-            v.Enabled = false
+-- ══════════════════════════════
+-- LOG SYSTEM
+-- ══════════════════════════════
+local logs = {}
+local recording = false
+local startTime = 0
+local lastPos = nil
+local MIN_MOVE = 1.5 -- minimum stud movement to log
+
+local function timestamp()
+    return string.format("%.2f", tick() - startTime)
+end
+
+local function addLog(type_, data)
+    if not recording then return end
+    local entry = {
+        t    = timestamp(),
+        type = type_,
+        data = data
+    }
+    table.insert(logs, entry)
+end
+
+local function fmtPos(v3)
+    if not v3 then return "nil" end
+    return string.format("(%.1f, %.1f, %.1f)", v3.X, v3.Y, v3.Z)
+end
+
+-- ══════════════════════════════
+-- WATCHERS
+-- ══════════════════════════════
+local connections = {}
+
+local function startWatching()
+    local char = player.Character or player.CharacterAdded:Wait()
+    local hrp  = char:WaitForChild("HumanoidRootPart", 5)
+    local hum  = char:WaitForChild("Humanoid", 5)
+    if not hrp or not hum then return end
+
+    -- POSITION TRACKER (every 0.2s)
+    local posConn = RunService.Heartbeat:Connect(function()
+        if not recording then return end
+        local pos = hrp.Position
+        if not lastPos or (pos - lastPos).Magnitude >= MIN_MOVE then
+            addLog("MOVE", {
+                pos   = fmtPos(pos),
+                state = tostring(hum:GetState())
+            })
+            lastPos = pos
         end
-    end
-end)
-
--- TELEPORT
-local function tp(pos)
-    local char = player.Character
-    if not char then return end
-    local hrp = char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return end
-    hrp.CFrame = CFrame.new(pos + Vector3.new(0, 5, 0))
-end
-
-local function getPos(obj)
-    if obj:IsA("BasePart") then return obj.Position end
-    if obj:IsA("Model") then
-        local p = obj.PrimaryPart or obj:FindFirstChildWhichIsA("BasePart")
-        return p and p.Position
-    end
-end
-
-local function notif(t, m)
-    pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {Title=t, Text=m, Duration=3})
     end)
-end
+    table.insert(connections, posConn)
 
--- DETECT CP
-local function detectCP()
-    local list, seen = {}, {}
-    local function isCP(name)
-        local n = name:lower()
-        if tonumber(n) then return true end
-        return n:match("check") or n:match("cp") or n:match("stage") or
-               n:match("summit") or n:match("finish") or n:match("waypoint") or
-               n:match("gate") or n:match("flag") or n:match("touch") or
-               n:match("zone") or n:match("point") or n:match("goal") or
-               n:match("node") or n:match("mark") or n:match("step") or
-               n:match("level") or n:match("ring") or n:match("pad") or
-               n:match("plate") or n:match("spawn") or n:match("end") or n:match("start")
-    end
-    local function add(obj)
-        local pos = getPos(obj)
-        if not pos then return end
-        if obj:IsA("BasePart") then
-            local s = obj.Size
-            if s.X > 500 or s.Z > 500 then return end
+    -- JUMP
+    local jumpConn = hum.Jumping:Connect(function(active)
+        if active then
+            addLog("JUMP", {pos = fmtPos(hrp.Position)})
         end
-        local k = math.round(pos.X/4).."_"..math.round(pos.Y/4).."_"..math.round(pos.Z/4)
-        if seen[k] then return end
-        seen[k] = true
-        table.insert(list, obj)
-    end
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if (obj:IsA("BasePart") or obj:IsA("Model")) and isCP(obj.Name) then add(obj) end
-    end
-    table.sort(list, function(a, b)
-        local nA = tonumber(a.Name:match("%d+") or a.Name) or 9999
-        local nB = tonumber(b.Name:match("%d+") or b.Name) or 9999
-        if nA ~= nB then return nA < nB end
-        local function y(o)
-            if o:IsA("BasePart") then return o.Position.Y end
-            local p = o.PrimaryPart or o:FindFirstChildWhichIsA("BasePart")
-            return p and p.Position.Y or 0
-        end
-        return y(a) < y(b)
     end)
-    return list
+    table.insert(connections, jumpConn)
+
+    -- STATE CHANGE
+    local stateConn = hum.StateChanged:Connect(function(old, new)
+        local skip = {
+            [Enum.HumanoidStateType.RunningNoPhysics] = true,
+            [Enum.HumanoidStateType.Running] = true,
+        }
+        if not skip[new] then
+            addLog("STATE", {
+                from = tostring(old),
+                to   = tostring(new),
+                pos  = fmtPos(hrp.Position)
+            })
+        end
+    end)
+    table.insert(connections, stateConn)
+
+    -- TOOL EQUIPPED
+    local toolConn = char.ChildAdded:Connect(function(child)
+        if child:IsA("Tool") then
+            addLog("TOOL_EQUIP", {name = child.Name, pos = fmtPos(hrp.Position)})
+        end
+    end)
+    table.insert(connections, toolConn)
+
+    local toolRConn = char.ChildRemoved:Connect(function(child)
+        if child:IsA("Tool") then
+            addLog("TOOL_UNEQUIP", {name = child.Name})
+        end
+    end)
+    table.insert(connections, toolRConn)
 end
 
--- DETECT GOPAY
-local function findGopay()
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        local n = obj.Name:lower()
-        if n:match("gopay") or n:match("go_pay") or n:match("voucher") or
-           n:match("gpay") or n:match("reward") or n:match("claim") then
-            local pos = getPos(obj)
-            if pos then return obj, pos end
-        end
+local function stopWatching()
+    for _, c in ipairs(connections) do
+        pcall(function() c:Disconnect() end)
     end
-    -- fallback: scan BillboardGui / SurfaceGui text
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("BillboardGui") or obj:IsA("SurfaceGui") then
-            for _, child in ipairs(obj:GetDescendants()) do
-                if child:IsA("TextLabel") or child:IsA("TextButton") then
-                    local t = child.Text:lower()
-                    if t:match("gopay") or t:match("voucher") or t:match("claim") then
-                        local parent = obj.Parent
-                        local pos = getPos(parent)
-                        if pos then return parent, pos end
-                    end
-                end
+    connections = {}
+end
+
+-- MOUSE CLICK
+local clickConn
+local function watchClicks()
+    if clickConn then pcall(function() clickConn:Disconnect() end) end
+    clickConn = UIS.InputBegan:Connect(function(inp, gpe)
+        if not recording then return end
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
+            local char = player.Character
+            local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+            addLog("CLICK_L", {
+                pos    = fmtPos(hrp and hrp.Position),
+                screen = string.format("(%d, %d)", inp.Position.X, inp.Position.Y)
+            })
+        elseif inp.UserInputType == Enum.UserInputType.MouseButton2 then
+            addLog("CLICK_R", {
+                screen = string.format("(%d, %d)", inp.Position.X, inp.Position.Y)
+            })
+        elseif inp.UserInputType == Enum.UserInputType.Touch then
+            addLog("TOUCH", {
+                screen = string.format("(%d, %d)", inp.Position.X, inp.Position.Y)
+            })
+        elseif inp.UserInputType == Enum.UserInputType.Keyboard then
+            local key = tostring(inp.KeyCode):gsub("Enum.KeyCode.","")
+            if key ~= "Unknown" then
+                addLog("KEY", {key = key})
             end
         end
+    end)
+end
+
+-- PROXIMITY PROMPT
+local function watchPrompts()
+    local function hookPrompt(pp)
+        local c = pp.Triggered:Connect(function(p)
+            if p == player then
+                addLog("PROMPT", {name = pp.ActionText, obj = pp.Parent and pp.Parent.Name or "?"})
+            end
+        end)
+        table.insert(connections, c)
     end
-    return nil, nil
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("ProximityPrompt") then hookPrompt(v) end
+    end
+    local wc = workspace.DescendantAdded:Connect(function(v)
+        if v:IsA("ProximityPrompt") then hookPrompt(v) end
+    end)
+    table.insert(connections, wc)
+end
+
+-- ══════════════════════════════
+-- EXPORT LOG
+-- ══════════════════════════════
+local function buildExport()
+    if #logs == 0 then return "-- No logs recorded." end
+
+    local lines = {}
+    table.insert(lines, "-- ═══════════════════════════════════════════")
+    table.insert(lines, "-- MOTION LOG  |  " .. #logs .. " events  |  " .. os.date("%Y-%m-%d %H:%M:%S"))
+    table.insert(lines, "-- ═══════════════════════════════════════════")
+    table.insert(lines, "")
+
+    -- Group summary
+    local counts = {}
+    for _, e in ipairs(logs) do
+        counts[e.type] = (counts[e.type] or 0) + 1
+    end
+    table.insert(lines, "-- SUMMARY:")
+    for k, v in pairs(counts) do
+        table.insert(lines, string.format("--   %-16s %d events", k, v))
+    end
+    table.insert(lines, "")
+    table.insert(lines, "-- RAW LOG:")
+    table.insert(lines, "local motionLog = {")
+
+    for _, e in ipairs(logs) do
+        local parts = {}
+        for k, v in pairs(e.data) do
+            table.insert(parts, k..'="'..tostring(v)..'"')
+        end
+        table.insert(lines, string.format(
+            '  {t="%s", type="%s", %s},',
+            e.t, e.type, table.concat(parts, ", ")
+        ))
+    end
+
+    table.insert(lines, "}")
+    table.insert(lines, "")
+    table.insert(lines, "-- REPLAY SCRIPT:")
+    table.insert(lines, "local Players = game:GetService('Players')")
+    table.insert(lines, "local player = Players.LocalPlayer")
+    table.insert(lines, "task.spawn(function()")
+    table.insert(lines, "  local char = player.Character or player.CharacterAdded:Wait()")
+    table.insert(lines, "  local hrp  = char:WaitForChild('HumanoidRootPart')")
+    table.insert(lines, "  local prevT = 0")
+    table.insert(lines, "  for _, e in ipairs(motionLog) do")
+    table.insert(lines, "    local dt = tonumber(e.t) - prevT")
+    table.insert(lines, "    if dt > 0 then task.wait(dt) end")
+    table.insert(lines, "    prevT = tonumber(e.t)")
+    table.insert(lines, "    if e.type == 'MOVE' then")
+    table.insert(lines, "      local x,y,z = e.pos:match('%((.+), (.+), (.+)%)')")
+    table.insert(lines, "      if x then hrp.CFrame = CFrame.new(tonumber(x),tonumber(y)+5,tonumber(z)) end")
+    table.insert(lines, "    elseif e.type == 'JUMP' then")
+    table.insert(lines, "      local hum = char:FindFirstChildOfClass('Humanoid')")
+    table.insert(lines, "      if hum then hum.Jump = true end")
+    table.insert(lines, "    end")
+    table.insert(lines, "  end")
+    table.insert(lines, "end)")
+
+    return table.concat(lines, "\n")
 end
 
 -- ══════════════════════════════
 -- GUI
 -- ══════════════════════════════
-local W1 = Color3.fromRGB(225,225,225)
+local BK = Color3.fromRGB(8,8,8)
+local DK = Color3.fromRGB(16,16,16)
+local CD = Color3.fromRGB(24,24,24)
+local BD = Color3.fromRGB(40,40,40)
+local W1 = Color3.fromRGB(220,220,220)
 local G1 = Color3.fromRGB(70,70,70)
-local BK = Color3.fromRGB(10,10,10)
-local DK = Color3.fromRGB(17,17,17)
-local CD = Color3.fromRGB(25,25,25)
-local BD = Color3.fromRGB(38,38,38)
 local GR = Color3.fromRGB(80,200,100)
 local RD = Color3.fromRGB(210,70,70)
-local YL = Color3.fromRGB(210,180,50)
-local CY = Color3.fromRGB(0,185,230)  -- gopay cyan
+local YL = Color3.fromRGB(220,190,60)
+local AC = Color3.fromRGB(140,140,255)
 
-local function corner(p, r)
-    local c = Instance.new("UICorner", p)
-    c.CornerRadius = UDim.new(0, r or 7)
-end
-local function stroke(p, c, t)
-    local s = Instance.new("UIStroke", p)
-    s.Color = c or BD
-    s.Thickness = t or 1
-end
+local function cr(p,r) local u=Instance.new("UICorner",p) u.CornerRadius=UDim.new(0,r or 7) end
+local function sk(p,c,t) local s=Instance.new("UIStroke",p) s.Color=c or BD s.Thickness=t or 1 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name = "SL6"
-sg.ResetOnSpawn = false
-sg.DisplayOrder = 999
+sg.Name           = "MLPro"
+sg.ResetOnSpawn   = false
+sg.DisplayOrder   = 9999
 sg.IgnoreGuiInset = true
 sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-sg.Parent = player:WaitForChild("PlayerGui")
+sg.Parent         = player.PlayerGui
 
 -- MAIN
-local M = Instance.new("Frame")
-M.Size = UDim2.new(0, 230, 0, 370)
-M.Position = UDim2.new(0.5, -115, 0.5, -185)
-M.BackgroundColor3 = BK
-M.BorderSizePixel = 0
-M.Active = true
-M.Draggable = true
-M.Parent = sg
-corner(M, 11)
-stroke(M, BD, 1)
+local F = Instance.new("Frame", sg)
+F.Size             = UDim2.new(0, 250, 0, 420)
+F.Position         = UDim2.new(0, 16, 0, 70)
+F.BackgroundColor3 = BK
+F.BorderSizePixel  = 0
+F.Active           = true
+F.Draggable        = true
+F.ZIndex           = 10
+cr(F, 10) sk(F, BD, 1)
 
--- TOPBAR
-local Top = Instance.new("Frame", M)
-Top.Size = UDim2.new(1, 0, 0, 36)
-Top.BackgroundColor3 = DK
-Top.BorderSizePixel = 0
-corner(Top, 11)
-local TopFix = Instance.new("Frame", Top)
-TopFix.Size = UDim2.new(1, 0, 0, 11)
-TopFix.Position = UDim2.new(0, 0, 1, -11)
-TopFix.BackgroundColor3 = DK
-TopFix.BorderSizePixel = 0
+-- TOP BAR
+local TB = Instance.new("Frame", F)
+TB.Size             = UDim2.new(1,0,0,36)
+TB.BackgroundColor3 = DK
+TB.BorderSizePixel  = 0
+TB.ZIndex           = 11
+cr(TB, 10)
+local TBF = Instance.new("Frame", TB)
+TBF.Size            = UDim2.new(1,0,0,10)
+TBF.Position        = UDim2.new(0,0,1,-10)
+TBF.BackgroundColor3= DK
+TBF.BorderSizePixel = 0
+TBF.ZIndex          = 11
 
-local TitleLbl = Instance.new("TextLabel", Top)
-TitleLbl.Size = UDim2.new(1, -44, 1, 0)
-TitleLbl.Position = UDim2.new(0, 12, 0, 0)
-TitleLbl.BackgroundTransparency = 1
-TitleLbl.Text = "⛰  SUMMIT LITE"
-TitleLbl.TextColor3 = W1
-TitleLbl.Font = Enum.Font.GothamBold
-TitleLbl.TextSize = 12
-TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
+local Dot = Instance.new("Frame", TB)
+Dot.Size            = UDim2.new(0,6,0,6)
+Dot.Position        = UDim2.new(0,10,0.5,-3)
+Dot.BackgroundColor3= RD
+Dot.BorderSizePixel = 0
+Dot.ZIndex          = 12
+cr(Dot, 6)
 
-local XBtn = Instance.new("TextButton", Top)
-XBtn.Size = UDim2.new(0, 22, 0, 22)
-XBtn.Position = UDim2.new(1, -28, 0.5, -11)
-XBtn.Text = "✕"
-XBtn.TextColor3 = G1
-XBtn.BackgroundColor3 = CD
-XBtn.Font = Enum.Font.GothamBold
-XBtn.TextSize = 10
-XBtn.BorderSizePixel = 0
-corner(XBtn, 5)
-XBtn.MouseButton1Click:Connect(function() sg:Destroy() end)
+local TLbl = Instance.new("TextLabel", TB)
+TLbl.Size               = UDim2.new(1,-50,1,0)
+TLbl.Position           = UDim2.new(0,22,0,0)
+TLbl.BackgroundTransparency = 1
+TLbl.Text               = "MOTION LOGGER"
+TLbl.TextColor3         = W1
+TLbl.Font               = Enum.Font.GothamBold
+TLbl.TextSize           = 12
+TLbl.TextXAlignment     = Enum.TextXAlignment.Left
+TLbl.ZIndex             = 12
 
--- STATUS
-local StatLbl = Instance.new("TextLabel", M)
-StatLbl.Size = UDim2.new(1, -20, 0, 16)
-StatLbl.Position = UDim2.new(0, 10, 0, 44)
-StatLbl.BackgroundTransparency = 1
-StatLbl.Text = "Mendeteksi..."
-StatLbl.TextColor3 = G1
-StatLbl.Font = Enum.Font.Gotham
-StatLbl.TextSize = 10
-StatLbl.TextXAlignment = Enum.TextXAlignment.Left
-StatLbl.TextTruncate = Enum.TextTruncate.AtEnd
+local XB = Instance.new("TextButton", TB)
+XB.Size             = UDim2.new(0,22,0,22)
+XB.Position         = UDim2.new(1,-26,0.5,-11)
+XB.Text             = "✕"
+XB.TextColor3       = G1
+XB.BackgroundColor3 = CD
+XB.Font             = Enum.Font.GothamBold
+XB.TextSize         = 10
+XB.BorderSizePixel  = 0
+XB.ZIndex           = 12
+cr(XB, 5)
+XB.MouseButton1Click:Connect(function() sg:Destroy() end)
 
--- PROGRESS BAR
-local PBg = Instance.new("Frame", M)
-PBg.Size = UDim2.new(1, -20, 0, 3)
-PBg.Position = UDim2.new(0, 10, 0, 63)
-PBg.BackgroundColor3 = CD
-PBg.BorderSizePixel = 0
-corner(PBg, 3)
-local PFl = Instance.new("Frame", PBg)
-PFl.Size = UDim2.new(0, 0, 1, 0)
-PFl.BackgroundColor3 = W1
-PFl.BorderSizePixel = 0
-corner(PFl, 3)
+-- STAT ROW
+local function statLabel(xPct, labelTxt)
+    local box = Instance.new("Frame", F)
+    box.Size            = UDim2.new(0.3, -4, 0, 36)
+    box.Position        = UDim2.new(xPct, 2, 0, 44)
+    box.BackgroundColor3= CD
+    box.BorderSizePixel = 0
+    box.ZIndex          = 11
+    cr(box, 6) sk(box, BD, 1)
 
-local function setProg(d, t)
-    TweenService:Create(PFl, TweenInfo.new(0.25), {
-        Size = UDim2.new(t > 0 and d/t or 0, 0, 1, 0)
-    }):Play()
+    local top = Instance.new("TextLabel", box)
+    top.Size                = UDim2.new(1,0,0,14)
+    top.Position            = UDim2.new(0,0,0,4)
+    top.BackgroundTransparency = 1
+    top.Text                = labelTxt
+    top.TextColor3          = G1
+    top.Font                = Enum.Font.Gotham
+    top.TextSize            = 8
+    top.TextXAlignment      = Enum.TextXAlignment.Center
+    top.ZIndex              = 12
+
+    local val = Instance.new("TextLabel", box)
+    val.Size                = UDim2.new(1,0,0,16)
+    val.Position            = UDim2.new(0,0,0,18)
+    val.BackgroundTransparency = 1
+    val.Text                = "0"
+    val.TextColor3          = W1
+    val.Font                = Enum.Font.GothamBold
+    val.TextSize            = 13
+    val.TextXAlignment      = Enum.TextXAlignment.Center
+    val.ZIndex              = 12
+    return val
 end
 
--- BUTTON FACTORY
-local btnY = 74
-local function mkBtn(label, color, h)
-    local b = Instance.new("TextButton", M)
-    b.Size = UDim2.new(1, -20, 0, h or 30)
-    b.Position = UDim2.new(0, 10, 0, btnY)
-    b.BackgroundColor3 = color or CD
-    b.Text = label
-    b.TextColor3 = W1
-    b.Font = Enum.Font.GothamBold
-    b.TextSize = 11
-    b.BorderSizePixel = 0
-    corner(b, 7)
-    stroke(b, BD, 1)
-    b.MouseEnter:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.12), {BackgroundColor3 = BD}):Play()
-    end)
-    b.MouseLeave:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.12), {BackgroundColor3 = color or CD}):Play()
-    end)
-    btnY = btnY + (h or 30) + 6
+local statEvents = statLabel(0,    "EVENTS")
+local statTime   = statLabel(0.34, "DURASI")
+local statMoves  = statLabel(0.67, "MOVES")
+
+-- RECORD BUTTON
+local RecBtn = Instance.new("TextButton", F)
+RecBtn.Size             = UDim2.new(1,-20,0,36)
+RecBtn.Position         = UDim2.new(0,10,0,88)
+RecBtn.BackgroundColor3 = Color3.fromRGB(180,40,40)
+RecBtn.Text             = "⏺  MULAI REKAM"
+RecBtn.TextColor3       = W1
+RecBtn.Font             = Enum.Font.GothamBold
+RecBtn.TextSize         = 13
+RecBtn.BorderSizePixel  = 0
+RecBtn.ZIndex           = 11
+cr(RecBtn, 8) sk(RecBtn, BD, 1)
+
+-- CLEAR + COPY ROW
+local function smallBtn(xPct, txt, w, col)
+    local b = Instance.new("TextButton", F)
+    b.Size              = UDim2.new(w, -6, 0, 26)
+    b.Position          = UDim2.new(xPct, 3, 0, 132)
+    b.BackgroundColor3  = col or CD
+    b.Text              = txt
+    b.TextColor3        = W1
+    b.Font              = Enum.Font.GothamBold
+    b.TextSize          = 10
+    b.BorderSizePixel   = 0
+    b.ZIndex            = 11
+    cr(b, 6) sk(b, BD, 1)
     return b
 end
+local ClearBtn = smallBtn(0,    "🗑  CLEAR",  0.33, Color3.fromRGB(60,20,20))
+local CopyBtn  = smallBtn(0.34, "📋  COPY LOG", 0.66, Color3.fromRGB(20,50,20))
 
-local AutoBtn  = mkBtn("▶  AUTO SUMMIT", CD)
-local SummitBtn= mkBtn("⬆  TELEPORT SUMMIT", CD)
-local GopayBtn = mkBtn("💳  AUTO GOPAY DETECT", Color3.fromRGB(0,60,80))
-local RefBtn   = mkBtn("↺  REFRESH CP", CD, 24)
+-- FILTER CHECKBOXES
+local filterY = 166
+local function mkCheck(y, label, default)
+    local row = Instance.new("Frame", F)
+    row.Size             = UDim2.new(1,-20,0,20)
+    row.Position         = UDim2.new(0,10,0,y)
+    row.BackgroundTransparency = 1
+    row.ZIndex           = 11
 
--- DELAY ROW
-local DRow = Instance.new("Frame", M)
-DRow.Size = UDim2.new(1, -20, 0, 22)
-DRow.Position = UDim2.new(0, 10, 0, btnY)
-DRow.BackgroundTransparency = 1
-btnY = btnY + 28
+    local box = Instance.new("TextButton", row)
+    box.Size             = UDim2.new(0,16,0,16)
+    box.Position         = UDim2.new(0,0,0.5,-8)
+    box.BackgroundColor3 = default and AC or CD
+    box.Text             = default and "✓" or ""
+    box.TextColor3       = BK
+    box.Font             = Enum.Font.GothamBold
+    box.TextSize         = 10
+    box.BorderSizePixel  = 0
+    box.ZIndex           = 12
+    cr(box, 4) sk(box, BD, 1)
 
-local DLbl = Instance.new("TextLabel", DRow)
-DLbl.Size = UDim2.new(0.62, 0, 1, 0)
-DLbl.BackgroundTransparency = 1
-DLbl.Text = "Delay per CP (detik):"
-DLbl.TextColor3 = G1
-DLbl.Font = Enum.Font.Gotham
-DLbl.TextSize = 10
-DLbl.TextXAlignment = Enum.TextXAlignment.Left
+    local lbl = Instance.new("TextLabel", row)
+    lbl.Size             = UDim2.new(1,-22,1,0)
+    lbl.Position         = UDim2.new(0,20,0,0)
+    lbl.BackgroundTransparency = 1
+    lbl.Text             = label
+    lbl.TextColor3       = G1
+    lbl.Font             = Enum.Font.Gotham
+    lbl.TextSize         = 10
+    lbl.TextXAlignment   = Enum.TextXAlignment.Left
+    lbl.ZIndex           = 11
 
-local DBox = Instance.new("TextBox", DRow)
-DBox.Size = UDim2.new(0.35, 0, 1, 0)
-DBox.Position = UDim2.new(0.63, 0, 0, 0)
-DBox.BackgroundColor3 = CD
-DBox.Text = "0.5"
-DBox.TextColor3 = W1
-DBox.Font = Enum.Font.GothamBold
-DBox.TextSize = 10
-DBox.TextXAlignment = Enum.TextXAlignment.Center
-DBox.BorderSizePixel = 0
-corner(DBox, 5)
-stroke(DBox, BD, 1)
-
--- DIVIDER
-local Div = Instance.new("Frame", M)
-Div.Size = UDim2.new(1, -20, 0, 1)
-Div.Position = UDim2.new(0, 10, 0, btnY)
-Div.BackgroundColor3 = BD
-Div.BorderSizePixel = 0
-btnY = btnY + 7
-
--- CP LIST HEADER
-local CPHdr = Instance.new("TextLabel", M)
-CPHdr.Size = UDim2.new(1, -20, 0, 14)
-CPHdr.Position = UDim2.new(0, 10, 0, btnY)
-CPHdr.BackgroundTransparency = 1
-CPHdr.Text = "MANUAL TELEPORT"
-CPHdr.TextColor3 = Color3.fromRGB(45, 45, 45)
-CPHdr.Font = Enum.Font.GothamBold
-CPHdr.TextSize = 9
-CPHdr.TextXAlignment = Enum.TextXAlignment.Left
-btnY = btnY + 18
-
--- CP SCROLL
-local CSF = Instance.new("ScrollingFrame", M)
-CSF.Size = UDim2.new(1, -20, 0, 370 - btnY - 20)
-CSF.Position = UDim2.new(0, 10, 0, btnY)
-CSF.BackgroundColor3 = DK
-CSF.BorderSizePixel = 0
-CSF.ScrollBarThickness = 2
-CSF.ScrollBarImageColor3 = BD
-CSF.CanvasSize = UDim2.new(0, 0, 0, 0)
-corner(CSF, 6)
-stroke(CSF, BD, 1)
-
-local CLL = Instance.new("UIListLayout", CSF)
-CLL.Padding = UDim.new(0, 2)
-CLL.SortOrder = Enum.SortOrder.LayoutOrder
-local CPPad = Instance.new("UIPadding", CSF)
-CPPad.PaddingTop = UDim.new(0, 4)
-CPPad.PaddingLeft = UDim.new(0, 4)
-CPPad.PaddingRight = UDim.new(0, 4)
-CPPad.PaddingBottom = UDim.new(0, 4)
-
-CLL:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
-    CSF.CanvasSize = UDim2.new(0, 0, 0, CLL.AbsoluteContentSize.Y + 8)
-end)
-
--- ══════════════════════════════
--- LOGIC
--- ══════════════════════════════
-local cpList = {}
-local running = false
-local selBtn2 = nil
-
-local function buildList()
-    for _, c in ipairs(CSF:GetChildren()) do
-        if c:IsA("TextButton") then c:Destroy() end
-    end
-    cpList = detectCP()
-
-    if #cpList == 0 then
-        StatLbl.Text = "⚠  Tidak ada CP ditemukan"
-        StatLbl.TextColor3 = RD
-    else
-        StatLbl.Text = "✓  " .. #cpList .. " CP terdeteksi"
-        StatLbl.TextColor3 = GR
-    end
-
-    for i, cp in ipairs(cpList) do
-        local b = Instance.new("TextButton", CSF)
-        b.LayoutOrder = i
-        b.Size = UDim2.new(1, 0, 0, 22)
-        b.BackgroundColor3 = CD
-        b.Text = string.format("[%02d]  %s", i, cp.Name)
-        b.TextColor3 = G1
-        b.Font = Enum.Font.Gotham
-        b.TextSize = 10
-        b.TextXAlignment = Enum.TextXAlignment.Left
-        b.BorderSizePixel = 0
-        local bp = Instance.new("UIPadding", b)
-        bp.PaddingLeft = UDim.new(0, 7)
-        corner(b, 4)
-
-        b.MouseButton1Click:Connect(function()
-            if selBtn2 and selBtn2 ~= b then
-                selBtn2.BackgroundColor3 = CD
-                selBtn2.TextColor3 = G1
-            end
-            selBtn2 = b
-            b.BackgroundColor3 = BD
-            b.TextColor3 = W1
-            local pos = getPos(cp)
-            if pos then
-                tp(pos)
-                StatLbl.Text = string.format("[%d/%d]  %s", i, #cpList, cp.Name)
-                StatLbl.TextColor3 = W1
-                setProg(i, #cpList)
-            end
-        end)
-    end
+    local on = default
+    box.MouseButton1Click:Connect(function()
+        on = not on
+        box.BackgroundColor3 = on and AC or CD
+        box.Text             = on and "✓" or ""
+    end)
+    return function() return on end
 end
 
--- AUTO SUMMIT
-AutoBtn.MouseButton1Click:Connect(function()
-    if running then
-        running = false
-        AutoBtn.Text = "▶  AUTO SUMMIT"
-        StatLbl.Text = "Dihentikan"
-        StatLbl.TextColor3 = YL
-        return
-    end
-    if #cpList == 0 then
-        StatLbl.Text = "⚠  Tidak ada CP!"
-        StatLbl.TextColor3 = RD
-        return
-    end
-    running = true
-    AutoBtn.Text = "■  STOP"
+local getMove  = mkCheck(filterY,    "Log Gerakan (MOVE)",   true)
+local getClick = mkCheck(filterY+22, "Log Klik / Touch",     true)
+local getKey   = mkCheck(filterY+44, "Log Keyboard",         false)
+local getState = mkCheck(filterY+66, "Log State (jump/fall)",true)
+local getTool  = mkCheck(filterY+88, "Log Tool",             true)
+local getProm  = mkCheck(filterY+110,"Log Proximity Prompt", true)
 
-    task.spawn(function()
-        local delay = math.max(tonumber(DBox.Text) or 0.5, 0.2)
-        for i, cp in ipairs(cpList) do
-            if not running then break end
-            local pos = getPos(cp)
-            if pos then
-                tp(pos)
-                StatLbl.Text = string.format("[%d/%d]  %s", i, #cpList, cp.Name)
-                StatLbl.TextColor3 = W1
-                setProg(i, #cpList)
-                notif(i.."/"..#cpList, cp.Name)
+-- DIVIDER
+local DivL = Instance.new("Frame", F)
+DivL.Size             = UDim2.new(1,-20,0,1)
+DivL.Position         = UDim2.new(0,10,0,filterY+136)
+DivL.BackgroundColor3 = BD
+DivL.BorderSizePixel  = 0
+DivL.ZIndex           = 11
+
+-- LIVE LOG SCROLL
+local LHdr = Instance.new("TextLabel", F)
+LHdr.Size               = UDim2.new(1,-20,0,14)
+LHdr.Position           = UDim2.new(0,10,0,filterY+142)
+LHdr.BackgroundTransparency = 1
+LHdr.Text               = "LIVE LOG"
+LHdr.TextColor3         = Color3.fromRGB(45,45,45)
+LHdr.Font               = Enum.Font.GothamBold
+LHdr.TextSize           = 9
+LHdr.TextXAlignment     = Enum.TextXAlignment.Left
+LHdr.ZIndex             = 11
+
+local liveScroll = Instance.new("ScrollingFrame", F)
+liveScroll.Size             = UDim2.new(1,-20,0,420-(filterY+158)-10)
+liveScroll.Position         = UDim2.new(0,10,0,filterY+158)
+liveScroll.BackgroundColor3 = DK
+liveScroll.BorderSizePixel  = 0
+liveScroll.ScrollBarThickness = 2
+liveScroll.ScrollBarImageColor3 = BD
+liveScroll.CanvasSize       = UDim2.new(0,0,0,0)
+liveScroll.ZIndex           = 11
+cr(liveScroll, 6) sk(liveScroll, BD, 1)
+
+local liveLayout = Instance.new("UIListLayout", liveScroll)
+liveLayout.SortOrder  = Enum.SortOrder.LayoutOrder
+liveLayout.Padding    = UDim.new(0,1)
+local livePad = Instance.new("UIPadding", liveScroll)
+livePad.PaddingTop    = UDim.new(0,4)
+livePad.PaddingLeft   = UDim.new(0,4)
+livePad.PaddingRight  = UDim.new(0,4)
+livePad.PaddingBottom = UDim.new(0,4)
+
+liveLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    liveScroll.CanvasSize = UDim2.new(0,0,0,liveLayout.AbsoluteContentSize.Y+8)
+end)
+
+local liveCount = 0
+local TYPE_COLOR = {
+    MOVE        = Color3.fromRGB(80,80,80),
+    JUMP        = Color3.fromRGB(80,180,255),
+    CLICK_L     = Color3.fromRGB(200,200,80),
+    CLICK_R     = Color3.fromRGB(180,140,60),
+    TOUCH       = Color3.fromRGB(200,200,80),
+    KEY         = Color3.fromRGB(160,160,255),
+    STATE       = Color3.fromRGB(120,120,140),
+    TOOL_EQUIP  = Color3.fromRGB(80,220,160),
+    TOOL_UNEQUIP= Color3.fromRGB(180,100,100),
+    PROMPT      = Color3.fromRGB(220,150,80),
+}
+
+local function pushLive(entry)
+    -- respect filters
+    local t = entry.type
+    if t == "MOVE"         and not getMove()  then return end
+    if (t == "CLICK_L" or t == "CLICK_R" or t == "TOUCH") and not getClick() then return end
+    if t == "KEY"          and not getKey()   then return end
+    if t == "STATE"        and not getState() then return end
+    if (t == "TOOL_EQUIP" or t == "TOOL_UNEQUIP") and not getTool() then return end
+    if t == "PROMPT"       and not getProm()  then return end
+
+    liveCount = liveCount + 1
+
+    -- build display text
+    local parts = {}
+    for k,v in pairs(entry.data) do
+        table.insert(parts, k..":"..tostring(v))
+    end
+    local line = string.format("[%ss] %s  %s", entry.t, entry.type, table.concat(parts,"  "))
+
+    local lbl = Instance.new("TextLabel", liveScroll)
+    lbl.LayoutOrder         = liveCount
+    lbl.Size                = UDim2.new(1,0,0,16)
+    lbl.BackgroundTransparency = 1
+    lbl.Text                = line
+    lbl.TextColor3          = TYPE_COLOR[t] or W1
+    lbl.Font                = Enum.Font.Code
+    lbl.TextSize            = 9
+    lbl.TextXAlignment      = Enum.TextXAlignment.Left
+    lbl.ZIndex              = 12
+    lbl.TextTruncate        = Enum.TextTruncate.AtEnd
+
+    -- auto scroll to bottom
+    task.defer(function()
+        liveScroll.CanvasPosition = Vector2.new(0, liveLayout.AbsoluteContentSize.Y)
+    end)
+end
+
+-- ══════════════════════════════
+-- TIMER UPDATE
+-- ══════════════════════════════
+local timerConn
+local moveCount = 0
+
+local origAdd = addLog
+addLog = function(type_, data)
+    origAdd(type_, data)
+    local entry = logs[#logs]
+    if not entry then return end
+    -- update stats
+    statEvents.Text = tostring(#logs)
+    if type_ == "MOVE" then
+        moveCount = moveCount + 1
+        statMoves.Text = tostring(moveCount)
+    end
+    pushLive(entry)
+end
+
+-- ══════════════════════════════
+-- RECORD TOGGLE
+-- ══════════════════════════════
+RecBtn.MouseButton1Click:Connect(function()
+    recording = not recording
+    if recording then
+        startTime  = tick()
+        moveCount  = 0
+        lastPos    = nil
+        RecBtn.Text             = "⏹  BERHENTI"
+        RecBtn.BackgroundColor3 = Color3.fromRGB(40,40,40)
+        Dot.BackgroundColor3    = GR
+
+        startWatching()
+        watchClicks()
+        watchPrompts()
+
+        -- timer tick
+        timerConn = RunService.Heartbeat:Connect(function()
+            if recording then
+                statTime.Text = string.format("%.1fs", tick()-startTime)
             end
-            task.wait(delay)
-        end
-        if running then
-            StatLbl.Text = "✓  Summit selesai!"
-            StatLbl.TextColor3 = GR
-            setProg(#cpList, #cpList)
-            notif("SELESAI!", "Semua checkpoint done 🏆")
-        end
-        running = false
-        AutoBtn.Text = "▶  AUTO SUMMIT"
-    end)
-end)
-
--- TELEPORT SUMMIT
-SummitBtn.MouseButton1Click:Connect(function()
-    if #cpList == 0 then
-        StatLbl.Text = "⚠  Tidak ada CP!"
-        StatLbl.TextColor3 = RD
-        return
-    end
-    local last = cpList[#cpList]
-    local pos = getPos(last)
-    if pos then
-        tp(pos)
-        StatLbl.Text = "⬆  Summit: " .. last.Name
-        StatLbl.TextColor3 = GR
-        setProg(#cpList, #cpList)
-        notif("Summit!", last.Name)
+        end)
+    else
+        recording = false
+        RecBtn.Text             = "⏺  MULAI REKAM"
+        RecBtn.BackgroundColor3 = Color3.fromRGB(180,40,40)
+        Dot.BackgroundColor3    = RD
+        stopWatching()
+        if timerConn then timerConn:Disconnect() end
     end
 end)
 
--- GOPAY AUTO DETECT & TELEPORT
-GopayBtn.MouseButton1Click:Connect(function()
-    StatLbl.Text = "🔍  Mencari GoPay..."
-    StatLbl.TextColor3 = CY
+-- CLEAR
+ClearBtn.MouseButton1Click:Connect(function()
+    logs = {}
+    moveCount = 0
+    statEvents.Text = "0"
+    statTime.Text   = "0"
+    statMoves.Text  = "0"
+    for _, c in ipairs(liveScroll:GetChildren()) do
+        if c:IsA("TextLabel") then c:Destroy() end
+    end
+    liveCount = 0
+end)
 
-    task.spawn(function()
-        local obj, pos = findGopay()
-        if pos then
-            tp(pos)
-            StatLbl.Text = "💳  GoPay: " .. (obj and obj.Name or "found")
-            StatLbl.TextColor3 = CY
-            notif("GoPay!", "Teleport ke " .. (obj and obj.Name or "GoPay spot"))
-
-            -- Auto-touch/click trigger jika ada ProximityPrompt
-            task.wait(0.5)
-            pcall(function()
-                if obj then
-                    for _, v in ipairs(obj:GetDescendants()) do
-                        if v:IsA("ProximityPrompt") then
-                            fireproximityprompt(v)
-                        end
-                    end
-                    -- also check parent
-                    local par = obj.Parent
-                    if par then
-                        for _, v in ipairs(par:GetDescendants()) do
-                            if v:IsA("ProximityPrompt") then
-                                fireproximityprompt(v)
-                            end
-                        end
-                    end
-                end
-            end)
-        else
-            StatLbl.Text = "⚠  GoPay tidak ditemukan"
-            StatLbl.TextColor3 = RD
-            notif("GoPay", "Tidak ditemukan di map ini")
-        end
+-- COPY
+CopyBtn.MouseButton1Click:Connect(function()
+    local export = buildExport()
+    -- Write to clipboard via executor
+    local ok = pcall(function() setclipboard(export) end)
+    if not ok then
+        pcall(function() toclipboard(export) end)
+    end
+    CopyBtn.Text = "✓  TERSALIN!"
+    CopyBtn.BackgroundColor3 = Color3.fromRGB(20,80,20)
+    task.delay(2, function()
+        CopyBtn.Text = "📋  COPY LOG"
+        CopyBtn.BackgroundColor3 = Color3.fromRGB(20,50,20)
     end)
 end)
 
--- REFRESH
-RefBtn.MouseButton1Click:Connect(function()
-    StatLbl.Text = "Memuat ulang..."
-    StatLbl.TextColor3 = G1
-    task.wait(0.3)
-    buildList()
-end)
-
--- F9 TOGGLE
+-- F9
 UIS.InputBegan:Connect(function(inp, gpe)
     if gpe then return end
     if inp.KeyCode == Enum.KeyCode.F9 then
-        M.Visible = not M.Visible
+        F.Visible = not F.Visible
     end
 end)
 
--- INIT
-task.spawn(function()
-    task.wait(2)
-    buildList()
-end)
-
-print("✅ Summit Lite v6 + GoPay | F9 toggle")
+print("✅ Motion Logger Pro | F9 toggle")
