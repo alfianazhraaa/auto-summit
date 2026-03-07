@@ -1,57 +1,128 @@
 --[[
-  GOPAY TELEPORT PANEL
-  Target: RedemptionPointBasepart
-  Coords from Motion Log
+  GOPAY SCRIPT TALAMAU
+  BY ALFIAN
 ]]
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
 local player = Players.LocalPlayer
 
 pcall(function()
     for _, g in ipairs(player.PlayerGui:GetChildren()) do
-        if g.Name == "GPPanel" then g:Destroy() end
+        if g.Name == "GPAlfian" then g:Destroy() end
     end
 end)
 
 -- ══════════════════════════════
--- CORE FUNCTIONS
+-- ANTI-LAG SYSTEM
 -- ══════════════════════════════
-local TARGET = Vector3.new(-527.5, 1062.0, 333.4)
-local status_cb = nil -- callback to update UI
+local function applyAntiLag()
+    -- Render quality lowest
+    pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+    pcall(function() settings().Rendering.MeshPartDetailLevel = Enum.MeshPartDetailLevel.Level01 end)
+    pcall(function() settings().Rendering.EagerBulkExecution = true end)
 
-local function notif(t, m)
+    -- Shadows off
+    pcall(function() workspace.GlobalShadows = false end)
+    pcall(function() workspace.StreamingEnabled = false end)
+
+    -- FPS cap lowest (15fps)
     pcall(function()
-        game:GetService("StarterGui"):SetCore("SendNotification", {Title=t, Text=m, Duration=3})
+        settings().Rendering.FrameRateManager = 2
+        settings().Rendering.MaxFrameRate = 15
+    end)
+
+    -- Lighting lowest
+    pcall(function()
+        local L = game:GetService("Lighting")
+        L.GlobalShadows      = false
+        L.FogEnd             = 100000
+        L.Brightness         = 1
+        L.EnvironmentDiffuseScale = 0
+        L.EnvironmentSpecularScale = 0
+        for _, v in ipairs(L:GetChildren()) do
+            if v:IsA("BlurEffect") or v:IsA("SunRaysEffect") or
+               v:IsA("ColorCorrectionEffect") or v:IsA("BloomEffect") or
+               v:IsA("DepthOfFieldEffect") then
+                v.Enabled = false
+            end
+        end
+    end)
+
+    -- Disable particles, effects, decals
+    pcall(function()
+        for _, v in ipairs(workspace:GetDescendants()) do
+            if v:IsA("ParticleEmitter") or v:IsA("Fire") or
+               v:IsA("Smoke") or v:IsA("Sparkles") or v:IsA("Beam") then
+                v.Enabled = false
+            end
+            if v:IsA("Decal") or v:IsA("Texture") then
+                v.Transparency = 1
+            end
+            if v:IsA("SpecialMesh") then
+                pcall(function() v.TextureId = "" end)
+            end
+        end
+    end)
+
+    -- Camera distance minimal
+    pcall(function()
+        local cam = workspace.CurrentCamera
+        if cam then cam.FieldOfView = 70 end
     end)
 end
 
-local function setStatus(msg, color)
-    if status_cb then status_cb(msg, color) end
+-- ══════════════════════════════
+-- CORE LOGIC
+-- ══════════════════════════════
+local TARGET = Vector3.new(-527.5, 1062.0, 333.4)
+local running = false
+local statusCB = nil
+local antilagOn = false
+
+local function notif(t, m)
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = t, Text = m, Duration = 3
+        })
+    end)
+end
+
+local function setStatus(msg, col)
+    if statusCB then statusCB(msg, col) end
+end
+
+local function doTeleport(pos)
+    local char = player.Character or player.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart", 5)
+    if not hrp then return false end
+    hrp.CFrame = CFrame.new(pos + Vector3.new(0, 5, 0))
+    return true
 end
 
 local function findRedemption()
-    -- Priority: exact name match
     for _, v in ipairs(workspace:GetDescendants()) do
         if v.Name == "RedemptionPointBasepart" then return v end
     end
-    -- Fallback: pattern
     for _, v in ipairs(workspace:GetDescendants()) do
         local n = v.Name:lower()
-        if n:match("redemption") or n:match("gopay") or n:match("voucher") or n:match("claim") then
+        if n:match("redemption") or n:match("gopay") or
+           n:match("voucher") or n:match("claim") then
             if v:IsA("BasePart") or v:IsA("Model") then return v end
         end
     end
-    -- Fallback: scan BillboardGui text
     for _, v in ipairs(workspace:GetDescendants()) do
         if v:IsA("BillboardGui") or v:IsA("SurfaceGui") then
             for _, c in ipairs(v:GetDescendants()) do
-                if (c:IsA("TextLabel") or c:IsA("TextButton")) then
+                if c:IsA("TextLabel") or c:IsA("TextButton") then
                     local t = c.Text:lower()
                     if t:match("gopay") or t:match("claim") or t:match("voucher") then
                         local par = v.Parent
-                        if par and (par:IsA("BasePart") or par:IsA("Model")) then return par end
+                        if par and (par:IsA("BasePart") or par:IsA("Model")) then
+                            return par
+                        end
                     end
                 end
             end
@@ -69,30 +140,8 @@ local function getObjPos(obj)
     end
 end
 
-local function doTeleport(pos)
-    local char = player.Character or player.CharacterAdded:Wait()
-    local hrp = char:WaitForChild("HumanoidRootPart", 5)
-    if not hrp then return false end
-    hrp.CFrame = CFrame.new(pos + Vector3.new(0, 5, 0))
-    return true
-end
-
-local function firePrompts(obj)
+local function firePrompts()
     local fired = 0
-    -- Check object itself and descendants
-    local targets = {obj}
-    if obj then
-        for _, v in ipairs(obj:GetDescendants()) do
-            table.insert(targets, v)
-        end
-        -- Also check parent
-        if obj.Parent then
-            for _, v in ipairs(obj.Parent:GetDescendants()) do
-                table.insert(targets, v)
-            end
-        end
-    end
-    -- Also scan whole workspace for claim prompts
     for _, v in ipairs(workspace:GetDescendants()) do
         if v:IsA("ProximityPrompt") then
             local n = (v.ActionText or ""):lower()
@@ -107,64 +156,38 @@ local function firePrompts(obj)
     return fired
 end
 
--- MAIN SEQUENCE
-local running = false
-local function runSequence(useLog, useScan, autoFire)
+local function runSequence()
     if running then return end
     running = true
-
     task.spawn(function()
-        -- STEP 1: Teleport to log coordinates
-        if useLog then
-            setStatus("📍 Teleport ke koordinat log...", "yellow")
-            task.wait(0.3)
-            local ok = doTeleport(TARGET)
-            if ok then
-                setStatus("✓ Tiba di " .. string.format("(%.1f, %.1f, %.1f)", TARGET.X, TARGET.Y, TARGET.Z), "green")
-                notif("Step 1", "Teleport ke koordinat log")
-            else
-                setStatus("⚠ Gagal teleport", "red")
-                running = false
-                return
+        setStatus("CONNECTING", "wait")
+        task.wait(0.4)
+        doTeleport(TARGET)
+        task.wait(0.8)
+
+        setStatus("SCANNING", "wait")
+        task.wait(0.4)
+        local obj = findRedemption()
+
+        if obj then
+            local pos = getObjPos(obj)
+            if pos then
+                doTeleport(pos)
+                task.wait(0.6)
             end
-            task.wait(0.8)
-        end
-
-        -- STEP 2: Scan & teleport ke objek
-        if useScan then
-            setStatus("🔍 Mencari RedemptionPoint...", "yellow")
-            task.wait(0.5)
-            local obj = findRedemption()
-            if obj then
-                local pos = getObjPos(obj)
-                if pos then
-                    doTeleport(pos)
-                    setStatus("✓ Ditemukan: " .. obj.Name, "green")
-                    notif("Step 2", "Objek: " .. obj.Name)
-                    task.wait(0.6)
-
-                    -- STEP 3: Fire prompt
-                    if autoFire then
-                        setStatus("💳 Firing Claim Voucher...", "cyan")
-                        task.wait(0.4)
-                        local fired = firePrompts(obj)
-                        if fired > 0 then
-                            setStatus("✅ Voucher diklaim! (" .. fired .. " prompt)", "green")
-                            notif("GoPay!", "Claim Voucher berhasil ✓")
-                        else
-                            setStatus("⚠ Prompt tidak ditemukan", "red")
-                            notif("GoPay", "Coba klik manual di objek")
-                        end
-                    end
-                else
-                    setStatus("⚠ Posisi objek tidak valid", "red")
-                end
+            setStatus("CLAIMING", "wait")
+            task.wait(0.4)
+            local fired = firePrompts()
+            if fired > 0 then
+                setStatus("SUCCESS", "done")
+                notif("GoPay Talamau", "Claim berhasil")
             else
-                setStatus("⚠ RedemptionPoint tidak ditemukan", "red")
-                notif("Scan", "Objek tidak ada di map ini")
+                setStatus("PROMPT NOT FOUND", "err")
             end
+        else
+            setStatus("OBJECT NOT FOUND", "err")
+            notif("GoPay", "Objek tidak ditemukan")
         end
-
         running = false
     end)
 end
@@ -172,336 +195,367 @@ end
 -- ══════════════════════════════
 -- GUI
 -- ══════════════════════════════
-local BK = Color3.fromRGB(8, 8, 8)
-local DK = Color3.fromRGB(15, 15, 15)
-local CD = Color3.fromRGB(23, 23, 23)
-local BD = Color3.fromRGB(38, 38, 38)
-local W1 = Color3.fromRGB(220, 220, 220)
-local G1 = Color3.fromRGB(70, 70, 70)
-local GR = Color3.fromRGB(70, 200, 100)
-local RD = Color3.fromRGB(210, 70, 70)
-local YL = Color3.fromRGB(210, 185, 50)
-local CY = Color3.fromRGB(0, 185, 230)
-local GP = Color3.fromRGB(0, 165, 210) -- gopay blue
+local C0  = Color3.fromRGB(0,   0,   0)    -- pure black
+local C1  = Color3.fromRGB(8,   8,   8)    -- base bg
+local C2  = Color3.fromRGB(14,  14,  14)   -- card
+local C3  = Color3.fromRGB(22,  22,  22)   -- elevated
+local C4  = Color3.fromRGB(35,  35,  35)   -- border
+local C5  = Color3.fromRGB(55,  55,  55)   -- muted border
+local W0  = Color3.fromRGB(255, 255, 255)  -- white
+local W1  = Color3.fromRGB(220, 220, 220)  -- primary text
+local W2  = Color3.fromRGB(140, 140, 140)  -- secondary text
+local W3  = Color3.fromRGB(60,  60,  60)   -- dim text
+local GR  = Color3.fromRGB(160, 255, 180)  -- success
+local RD  = Color3.fromRGB(255, 100, 100)  -- error
+local YL  = Color3.fromRGB(230, 200, 100)  -- warning
 
 local function cr(p, r)
     local u = Instance.new("UICorner", p)
-    u.CornerRadius = UDim.new(0, r or 8)
+    u.CornerRadius = UDim.new(0, r or 6)
+    return u
 end
 local function sk(p, c, t)
     local s = Instance.new("UIStroke", p)
-    s.Color = c or BD
+    s.Color = c or C4
     s.Thickness = t or 1
+    return s
+end
+local function pad(p, a, b, c, d)
+    local u = Instance.new("UIPadding", p)
+    u.PaddingTop    = UDim.new(0, a or 0)
+    u.PaddingBottom = UDim.new(0, b or 0)
+    u.PaddingLeft   = UDim.new(0, c or 0)
+    u.PaddingRight  = UDim.new(0, d or 0)
 end
 
 local sg = Instance.new("ScreenGui")
-sg.Name           = "GPPanel"
+sg.Name           = "GPAlfian"
 sg.ResetOnSpawn   = false
 sg.DisplayOrder   = 9999
 sg.IgnoreGuiInset = true
 sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 sg.Parent         = player.PlayerGui
 
--- MAIN FRAME
-local F = Instance.new("Frame", sg)
-F.Size             = UDim2.new(0, 240, 0, 400)
-F.Position         = UDim2.new(0, 16, 0, 70)
-F.BackgroundColor3 = BK
-F.BorderSizePixel  = 0
-F.Active           = true
-F.Draggable        = true
-F.ZIndex           = 10
-cr(F, 11) sk(F, BD, 1)
+-- ROOT
+local Root = Instance.new("Frame", sg)
+Root.Size             = UDim2.new(0, 248, 0, 0)
+Root.Position         = UDim2.new(0.5, -124, 0.5, -180)
+Root.BackgroundColor3 = C1
+Root.BorderSizePixel  = 0
+Root.Active           = true
+Root.Draggable        = true
+Root.ClipsDescendants = false
+Root.ZIndex           = 10
+cr(Root, 10)
+sk(Root, C4, 1)
 
--- TOPBAR
-local TB = Instance.new("Frame", F)
-TB.Size             = UDim2.new(1, 0, 0, 38)
-TB.BackgroundColor3 = DK
-TB.BorderSizePixel  = 0
-TB.ZIndex           = 11
-cr(TB, 11)
-local TBF = Instance.new("Frame", TB)
-TBF.Size            = UDim2.new(1, 0, 0, 11)
-TBF.Position        = UDim2.new(0, 0, 1, -11)
-TBF.BackgroundColor3= DK
-TBF.BorderSizePixel = 0
-TBF.ZIndex          = 11
+-- top accent
+local Accent = Instance.new("Frame", Root)
+Accent.Size             = UDim2.new(1, -2, 0, 1)
+Accent.Position         = UDim2.new(0, 1, 0, 1)
+Accent.BackgroundColor3 = W1
+Accent.BorderSizePixel  = 0
+Accent.ZIndex           = 14
+cr(Accent, 1)
 
--- Gopay logo dot
-local GPDot = Instance.new("Frame", TB)
-GPDot.Size            = UDim2.new(0, 8, 0, 8)
-GPDot.Position        = UDim2.new(0, 10, 0.5, -4)
-GPDot.BackgroundColor3= GP
-GPDot.BorderSizePixel = 0
-GPDot.ZIndex          = 12
-cr(GPDot, 8)
+-- SCROLL (auto layout)
+local Scroll = Instance.new("ScrollingFrame", Root)
+Scroll.Size               = UDim2.new(1, 0, 1, 0)
+Scroll.BackgroundTransparency = 1
+Scroll.BorderSizePixel    = 0
+Scroll.ScrollBarThickness = 0
+Scroll.CanvasSize         = UDim2.new(0, 0, 0, 0)
+Scroll.ZIndex             = 11
 
-local TLbl = Instance.new("TextLabel", TB)
-TLbl.Size               = UDim2.new(1, -50, 1, 0)
-TLbl.Position           = UDim2.new(0, 24, 0, 0)
-TLbl.BackgroundTransparency = 1
-TLbl.Text               = "GOPAY CLAIMER"
-TLbl.TextColor3         = W1
-TLbl.Font               = Enum.Font.GothamBold
-TLbl.TextSize           = 12
-TLbl.TextXAlignment     = Enum.TextXAlignment.Left
-TLbl.ZIndex             = 12
+local SL = Instance.new("UIListLayout", Scroll)
+SL.SortOrder = Enum.SortOrder.LayoutOrder
+SL.Padding   = UDim.new(0, 0)
+pad(Scroll, 20, 20, 20, 20)
 
-local XB = Instance.new("TextButton", TB)
-XB.Size             = UDim2.new(0, 22, 0, 22)
-XB.Position         = UDim2.new(1, -26, 0.5, -11)
-XB.Text             = "✕"
-XB.TextColor3       = G1
-XB.BackgroundColor3 = CD
-XB.Font             = Enum.Font.GothamBold
-XB.TextSize         = 10
-XB.BorderSizePixel  = 0
-XB.ZIndex           = 12
-cr(XB, 5)
-XB.MouseButton1Click:Connect(function() sg:Destroy() end)
+SL:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    local h = SL.AbsoluteContentSize.Y + 40
+    Root.Size = UDim2.new(0, 248, 0, h)
+    Scroll.CanvasSize = UDim2.new(0, 0, 0, h)
+end)
 
--- COORD CARD
-local CoordCard = Instance.new("Frame", F)
-CoordCard.Size             = UDim2.new(1, -20, 0, 54)
-CoordCard.Position         = UDim2.new(0, 10, 0, 46)
-CoordCard.BackgroundColor3 = CD
-CoordCard.BorderSizePixel  = 0
-CoordCard.ZIndex           = 11
-cr(CoordCard, 8) sk(CoordCard, BD, 1)
-
-local CoordTop = Instance.new("TextLabel", CoordCard)
-CoordTop.Size               = UDim2.new(1, -10, 0, 16)
-CoordTop.Position           = UDim2.new(0, 8, 0, 5)
-CoordTop.BackgroundTransparency = 1
-CoordTop.Text               = "TARGET KOORDINAT (dari Motion Log)"
-CoordTop.TextColor3         = G1
-CoordTop.Font               = Enum.Font.GothamBold
-CoordTop.TextSize           = 8
-CoordTop.TextXAlignment     = Enum.TextXAlignment.Left
-CoordTop.ZIndex             = 12
-
-local CoordVal = Instance.new("TextLabel", CoordCard)
-CoordVal.Size               = UDim2.new(1, -10, 0, 22)
-CoordVal.Position           = UDim2.new(0, 8, 0, 22)
-CoordVal.BackgroundTransparency = 1
-CoordVal.Text               = string.format("X: %.1f   Y: %.1f   Z: %.1f", TARGET.X, TARGET.Y, TARGET.Z)
-CoordVal.TextColor3         = CY
-CoordVal.Font               = Enum.Font.Code
-CoordVal.TextSize           = 12
-CoordVal.TextXAlignment     = Enum.TextXAlignment.Left
-CoordVal.ZIndex             = 12
-
--- STATUS CARD
-local StatCard = Instance.new("Frame", F)
-StatCard.Size             = UDim2.new(1, -20, 0, 40)
-StatCard.Position         = UDim2.new(0, 10, 0, 108)
-StatCard.BackgroundColor3 = CD
-StatCard.BorderSizePixel  = 0
-StatCard.ZIndex           = 11
-cr(StatCard, 8) sk(StatCard, BD, 1)
-
-local StatIcon = Instance.new("TextLabel", StatCard)
-StatIcon.Size               = UDim2.new(0, 30, 1, 0)
-StatIcon.Position           = UDim2.new(0, 6, 0, 0)
-StatIcon.BackgroundTransparency = 1
-StatIcon.Text               = "◉"
-StatIcon.TextColor3         = G1
-StatIcon.Font               = Enum.Font.GothamBold
-StatIcon.TextSize           = 14
-StatIcon.TextXAlignment     = Enum.TextXAlignment.Center
-StatIcon.ZIndex             = 12
-
-local StatLbl = Instance.new("TextLabel", StatCard)
-StatLbl.Size               = UDim2.new(1, -42, 1, 0)
-StatLbl.Position           = UDim2.new(0, 36, 0, 0)
-StatLbl.BackgroundTransparency = 1
-StatLbl.Text               = "Siap — pilih mode di bawah"
-StatLbl.TextColor3         = G1
-StatLbl.Font               = Enum.Font.Gotham
-StatLbl.TextSize           = 10
-StatLbl.TextXAlignment     = Enum.TextXAlignment.Left
-StatLbl.TextTruncate       = Enum.TextTruncate.AtEnd
-StatLbl.ZIndex             = 12
-
--- update status callback
-status_cb = function(msg, col)
-    StatLbl.Text = msg
-    local colors = {
-        green  = GR,
-        red    = RD,
-        yellow = YL,
-        cyan   = CY,
-        white  = W1,
-    }
-    StatLbl.TextColor3 = colors[col] or W1
-    StatIcon.TextColor3 = colors[col] or G1
+local function sp(order, h)
+    local f = Instance.new("Frame", Scroll)
+    f.LayoutOrder = order
+    f.Size = UDim2.new(1, 0, 0, h or 8)
+    f.BackgroundTransparency = 1
+    f.ZIndex = 11
 end
 
--- DIVIDER + LABEL
-local function divider(y, txt)
-    local d = Instance.new("Frame", F)
-    d.Size             = UDim2.new(1, -20, 0, 1)
-    d.Position         = UDim2.new(0, 10, 0, y)
-    d.BackgroundColor3 = BD
-    d.BorderSizePixel  = 0
-    d.ZIndex           = 11
+local function hl(order, col, h)
+    local f = Instance.new("Frame", Scroll)
+    f.LayoutOrder = order
+    f.Size = UDim2.new(1, 0, 0, h or 1)
+    f.BackgroundColor3 = col or C4
+    f.BorderSizePixel = 0
+    f.ZIndex = 12
+end
 
-    if txt then
-        local l = Instance.new("TextLabel", F)
-        l.Size               = UDim2.new(1, -20, 0, 14)
-        l.Position           = UDim2.new(0, 10, 0, y + 4)
-        l.BackgroundTransparency = 1
-        l.Text               = txt
-        l.TextColor3         = Color3.fromRGB(42, 42, 42)
-        l.Font               = Enum.Font.GothamBold
-        l.TextSize           = 9
-        l.TextXAlignment     = Enum.TextXAlignment.Left
-        l.ZIndex             = 11
+local function lbl(order, txt, sz, col, font, h, align)
+    local l = Instance.new("TextLabel", Scroll)
+    l.LayoutOrder = order
+    l.Size = UDim2.new(1, 0, 0, h or sz + 6)
+    l.BackgroundTransparency = 1
+    l.Text = txt
+    l.TextColor3 = col or W1
+    l.Font = font or Enum.Font.Gotham
+    l.TextSize = sz or 11
+    l.TextXAlignment = align or Enum.TextXAlignment.Center
+    l.ZIndex = 12
+    return l
+end
+
+-- ── HEADER ──────────────────────────────────
+lbl(1,  "GOPAY SCRIPT TALAMAU", 13, W1, Enum.Font.GothamBold, 18)
+lbl(2,  "BY ALFIAN",             9, W3, Enum.Font.GothamBold, 13)
+sp(3, 4)
+hl(4,  C4, 1)
+sp(5, 10)
+
+-- ── FEATURES ────────────────────────────────
+lbl(6, "FEATURES", 8, W3, Enum.Font.GothamBold, 14, Enum.TextXAlignment.Left)
+sp(7, 2)
+
+local feats = {
+    "Teleport to GoPay Claim",
+    "Fast Travel System",
+    "Auto Scan Redemption Point",
+    "Auto Fire Claim Prompt",
+    "Anti-Lag + Low Graphics",
+}
+
+for i, f in ipairs(feats) do
+    local row = Instance.new("Frame", Scroll)
+    row.LayoutOrder = 7 + i
+    row.Size = UDim2.new(1, 0, 0, 16)
+    row.BackgroundTransparency = 1
+    row.ZIndex = 12
+
+    local dot = Instance.new("Frame", row)
+    dot.Size = UDim2.new(0, 3, 0, 3)
+    dot.Position = UDim2.new(0, 0, 0.5, -1)
+    dot.BackgroundColor3 = W2
+    dot.BorderSizePixel = 0
+    dot.ZIndex = 13
+    cr(dot, 3)
+
+    local ftxt = Instance.new("TextLabel", row)
+    ftxt.Size = UDim2.new(1, -10, 1, 0)
+    ftxt.Position = UDim2.new(0, 10, 0, 0)
+    ftxt.BackgroundTransparency = 1
+    ftxt.Text = f
+    ftxt.TextColor3 = W2
+    ftxt.Font = Enum.Font.Gotham
+    ftxt.TextSize = 10
+    ftxt.TextXAlignment = Enum.TextXAlignment.Left
+    ftxt.ZIndex = 13
+end
+
+sp(13, 12)
+hl(14, C4, 1)
+sp(15, 10)
+
+-- ── STATUS ──────────────────────────────────
+local StatRow = Instance.new("Frame", Scroll)
+StatRow.LayoutOrder = 16
+StatRow.Size = UDim2.new(1, 0, 0, 30)
+StatRow.BackgroundColor3 = C2
+StatRow.BorderSizePixel = 0
+StatRow.ZIndex = 12
+cr(StatRow, 6)
+sk(StatRow, C4, 1)
+
+local StatKey = Instance.new("TextLabel", StatRow)
+StatKey.Size = UDim2.new(0, 70, 1, 0)
+StatKey.Position = UDim2.new(0, 10, 0, 0)
+StatKey.BackgroundTransparency = 1
+StatKey.Text = "STATUS"
+StatKey.TextColor3 = W3
+StatKey.Font = Enum.Font.GothamBold
+StatKey.TextSize = 8
+StatKey.TextXAlignment = Enum.TextXAlignment.Left
+StatKey.ZIndex = 13
+
+local StatDot = Instance.new("Frame", StatRow)
+StatDot.Size = UDim2.new(0, 5, 0, 5)
+StatDot.Position = UDim2.new(0, 82, 0.5, -2)
+StatDot.BackgroundColor3 = GR
+StatDot.BorderSizePixel = 0
+StatDot.ZIndex = 13
+cr(StatDot, 5)
+
+local StatVal = Instance.new("TextLabel", StatRow)
+StatVal.Size = UDim2.new(1, -100, 1, 0)
+StatVal.Position = UDim2.new(0, 94, 0, 0)
+StatVal.BackgroundTransparency = 1
+StatVal.Text = "READY"
+StatVal.TextColor3 = GR
+StatVal.Font = Enum.Font.GothamBold
+StatVal.TextSize = 10
+StatVal.TextXAlignment = Enum.TextXAlignment.Left
+StatVal.ZIndex = 13
+
+statusCB = function(msg, col)
+    StatVal.Text = msg
+    if col == "done" then
+        StatVal.TextColor3 = GR
+        StatDot.BackgroundColor3 = GR
+    elseif col == "err" then
+        StatVal.TextColor3 = RD
+        StatDot.BackgroundColor3 = RD
+    elseif col == "wait" then
+        StatVal.TextColor3 = YL
+        StatDot.BackgroundColor3 = YL
+    else
+        StatVal.TextColor3 = W1
+        StatDot.BackgroundColor3 = W1
     end
 end
 
-divider(156, "MODE")
+sp(17, 10)
 
--- CHECKBOX helper
-local function mkCheck(y, label, default)
-    local row = Instance.new("Frame", F)
-    row.Size               = UDim2.new(1, -20, 0, 22)
-    row.Position           = UDim2.new(0, 10, 0, y)
-    row.BackgroundTransparency = 1
-    row.ZIndex             = 11
+-- ── ANTI-LAG TOGGLE ─────────────────────────
+local ALRow = Instance.new("Frame", Scroll)
+ALRow.LayoutOrder = 18
+ALRow.Size = UDim2.new(1, 0, 0, 30)
+ALRow.BackgroundColor3 = C2
+ALRow.BorderSizePixel = 0
+ALRow.ZIndex = 12
+cr(ALRow, 6)
+sk(ALRow, C4, 1)
 
-    local box = Instance.new("TextButton", row)
-    box.Size               = UDim2.new(0, 16, 0, 16)
-    box.Position           = UDim2.new(0, 0, 0.5, -8)
-    box.BackgroundColor3   = default and GP or CD
-    box.Text               = default and "✓" or ""
-    box.TextColor3         = BK
-    box.Font               = Enum.Font.GothamBold
-    box.TextSize           = 10
-    box.BorderSizePixel    = 0
-    box.ZIndex             = 12
-    cr(box, 4) sk(box, BD, 1)
+local ALKey = Instance.new("TextLabel", ALRow)
+ALKey.Size = UDim2.new(0.6, 0, 1, 0)
+ALKey.Position = UDim2.new(0, 10, 0, 0)
+ALKey.BackgroundTransparency = 1
+ALKey.Text = "ANTI-LAG  /  LOW GRAPHICS"
+ALKey.TextColor3 = W3
+ALKey.Font = Enum.Font.GothamBold
+ALKey.TextSize = 8
+ALKey.TextXAlignment = Enum.TextXAlignment.Left
+ALKey.ZIndex = 13
 
-    local lbl = Instance.new("TextLabel", row)
-    lbl.Size               = UDim2.new(1, -22, 1, 0)
-    lbl.Position           = UDim2.new(0, 22, 0, 0)
-    lbl.BackgroundTransparency = 1
-    lbl.Text               = label
-    lbl.TextColor3         = G1
-    lbl.Font               = Enum.Font.Gotham
-    lbl.TextSize           = 10
-    lbl.TextXAlignment     = Enum.TextXAlignment.Left
-    lbl.ZIndex             = 11
+local ALBtn = Instance.new("TextButton", ALRow)
+ALBtn.Size = UDim2.new(0, 46, 0, 18)
+ALBtn.Position = UDim2.new(1, -54, 0.5, -9)
+ALBtn.BackgroundColor3 = C3
+ALBtn.Text = "OFF"
+ALBtn.TextColor3 = W3
+ALBtn.Font = Enum.Font.GothamBold
+ALBtn.TextSize = 9
+ALBtn.BorderSizePixel = 0
+ALBtn.ZIndex = 13
+cr(ALBtn, 5)
+sk(ALBtn, C5, 1)
 
-    local on = default
-    box.MouseButton1Click:Connect(function()
-        on = not on
-        box.BackgroundColor3 = on and GP or CD
-        box.Text             = on and "✓" or ""
-        lbl.TextColor3       = on and W1 or G1
-    end)
-    return function() return on end
-end
-
-local getUseLog  = mkCheck(174, "Teleport ke koordinat log dulu",   true)
-local getUseScan = mkCheck(198, "Scan & teleport ke objek GoPay",   true)
-local getAutoFire= mkCheck(222, "Auto fire Claim Voucher prompt",    true)
-
-divider(250, "ACTIONS")
-
--- BUTTONS
-local function mkBtn(y, txt, h, bg)
-    local b = Instance.new("TextButton", F)
-    b.Size             = UDim2.new(1, -20, 0, h or 34)
-    b.Position         = UDim2.new(0, 10, 0, y)
-    b.BackgroundColor3 = bg or CD
-    b.Text             = txt
-    b.TextColor3       = W1
-    b.Font             = Enum.Font.GothamBold
-    b.TextSize         = 12
-    b.BorderSizePixel  = 0
-    b.ZIndex           = 11
-    cr(b, 8) sk(b, BD, 1)
-    b.MouseEnter:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.12), {BackgroundColor3 = BD}):Play()
-    end)
-    b.MouseLeave:Connect(function()
-        TweenService:Create(b, TweenInfo.new(0.12), {BackgroundColor3 = bg or CD}):Play()
-    end)
-    return b
-end
-
-local RunBtn    = mkBtn(264, "▶  JALANKAN SEQUENCE",    36, Color3.fromRGB(0, 100, 140))
-local TpOnlyBtn = mkBtn(306, "📍 TELEPORT LOG COORDS",  28, CD)
-local ScanBtn   = mkBtn(340, "🔍 SCAN & TP KE OBJEK",   28, CD)
-local FireBtn   = mkBtn(374, "💳 FIRE CLAIM PROMPT",     28, Color3.fromRGB(0, 60, 90))
-
--- BUTTON ACTIONS
-RunBtn.MouseButton1Click:Connect(function()
-    if running then return end
-    runSequence(getUseLog(), getUseScan(), getAutoFire())
+ALBtn.MouseButton1Click:Connect(function()
+    antilagOn = not antilagOn
+    if antilagOn then
+        applyAntiLag()
+        ALBtn.Text = "ON"
+        ALBtn.TextColor3 = W1
+        sk(ALBtn, W3, 1)
+        setStatus("ANTI-LAG ON", "done")
+    else
+        ALBtn.Text = "OFF"
+        ALBtn.TextColor3 = W3
+        sk(ALBtn, C5, 1)
+        setStatus("READY", "done")
+    end
 end)
 
-TpOnlyBtn.MouseButton1Click:Connect(function()
-    if running then return end
-    running = true
-    setStatus("📍 Teleport ke koordinat...", "yellow")
-    task.spawn(function()
-        local ok = doTeleport(TARGET)
-        if ok then
-            setStatus("✓ Tiba di koordinat log", "green")
-            notif("Teleport", string.format("(%.1f, %.1f, %.1f)", TARGET.X, TARGET.Y, TARGET.Z))
-        else
-            setStatus("⚠ Gagal teleport", "red")
+sp(19, 10)
+
+-- ── START BUTTON ────────────────────────────
+local StartBtn = Instance.new("TextButton", Scroll)
+StartBtn.LayoutOrder = 20
+StartBtn.Size = UDim2.new(1, 0, 0, 40)
+StartBtn.BackgroundColor3 = C3
+StartBtn.Text = "START"
+StartBtn.TextColor3 = W1
+StartBtn.Font = Enum.Font.GothamBold
+StartBtn.TextSize = 13
+StartBtn.BorderSizePixel = 0
+StartBtn.ZIndex = 12
+cr(StartBtn, 8)
+sk(StartBtn, C5, 1)
+
+-- letter-spacing via RichText
+StartBtn.RichText = false
+
+-- pulse
+local pulsing = true
+task.spawn(function()
+    while true do
+        task.wait(0)
+        if not pulsing then task.wait(0.5) end
+        if pulsing then
+            TweenService:Create(StartBtn, TweenInfo.new(1.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+                BackgroundColor3 = Color3.fromRGB(32, 32, 32)
+            }):Play()
+            task.wait(1.4)
         end
-        running = false
-    end)
+        if pulsing then
+            TweenService:Create(StartBtn, TweenInfo.new(1.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut), {
+                BackgroundColor3 = C3
+            }):Play()
+            task.wait(1.4)
+        end
+    end
 end)
 
-ScanBtn.MouseButton1Click:Connect(function()
+StartBtn.MouseButton1Click:Connect(function()
     if running then return end
-    running = true
-    setStatus("🔍 Scanning workspace...", "yellow")
+    pulsing = false
+    TweenService:Create(StartBtn, TweenInfo.new(0.2), {BackgroundColor3 = C3}):Play()
+    StartBtn.Text = "RUNNING"
+    StartBtn.TextColor3 = YL
+    runSequence()
     task.spawn(function()
+        while running do task.wait(0.1) end
         task.wait(0.3)
-        local obj = findRedemption()
-        if obj then
-            local pos = getObjPos(obj)
-            if pos then
-                doTeleport(pos)
-                setStatus("✓ " .. obj.Name, "green")
-                notif("Ditemukan", obj.Name)
-            end
-        else
-            setStatus("⚠ Objek tidak ditemukan", "red")
-        end
-        running = false
+        StartBtn.Text = "START"
+        StartBtn.TextColor3 = W1
+        pulsing = true
     end)
 end)
 
-FireBtn.MouseButton1Click:Connect(function()
-    if running then return end
-    running = true
-    setStatus("💳 Firing prompts...", "cyan")
-    task.spawn(function()
-        local obj = findRedemption()
-        local fired = firePrompts(obj)
-        if fired > 0 then
-            setStatus("✅ " .. fired .. " prompt fired!", "green")
-            notif("GoPay!", "Claim Voucher fired ✓")
-        else
-            setStatus("⚠ Tidak ada prompt ditemukan", "red")
-        end
-        running = false
-    end)
-end)
+sp(21, 6)
 
--- F9 TOGGLE
+-- ── CLOSE ───────────────────────────────────
+local ClsBtn = Instance.new("TextButton", Scroll)
+ClsBtn.LayoutOrder = 22
+ClsBtn.Size = UDim2.new(1, 0, 0, 18)
+ClsBtn.BackgroundTransparency = 1
+ClsBtn.Text = "CLOSE"
+ClsBtn.TextColor3 = W3
+ClsBtn.Font = Enum.Font.Gotham
+ClsBtn.TextSize = 9
+ClsBtn.ZIndex = 12
+ClsBtn.MouseButton1Click:Connect(function() sg:Destroy() end)
+ClsBtn.MouseEnter:Connect(function() ClsBtn.TextColor3 = W2 end)
+ClsBtn.MouseLeave:Connect(function() ClsBtn.TextColor3 = W3 end)
+
+-- F9
 UIS.InputBegan:Connect(function(inp, gpe)
     if gpe then return end
     if inp.KeyCode == Enum.KeyCode.F9 then
-        F.Visible = not F.Visible
+        Root.Visible = not Root.Visible
     end
 end)
 
-print("✅ GoPay Claimer Panel | F9 toggle")
+-- auto apply antilag on load
+task.spawn(function()
+    task.wait(0.5)
+    applyAntiLag()
+    antilagOn = true
+    ALBtn.Text = "ON"
+    ALBtn.TextColor3 = W1
+    sk(ALBtn, W3, 1)
+end)
+
+print("GoPay Script Talamau | By Alfian | F9 toggle")
